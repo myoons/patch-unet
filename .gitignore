@@ -1,2 +1,7 @@
 .idea
+.vscode
+
+dataset.zip
+
+dataset/
 models/__pycache__
