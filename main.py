@@ -3,65 +3,75 @@ import torch
 import random
 import numpy as np
 from tqdm import tqdm
+from glob import glob
+from torch.utils.data import DataLoader, Dataset
+
 from models.WordSegmenter import WordSegmenter
 
 
-def rescale_pad_image(image, label, term=128):
-    shape = image.shape[:2]
-    hpad, wpad = (128 - shape[0] % term) / 2, (128 - shape[1] % term) / 2
-    top, bottom = int(round(hpad - 0.1)), int(round(hpad + 0.1))
-    left, right = int(round(wpad - 0.1)), int(round(wpad + 0.1))
-
-    image = cv2.copyMakeBorder(image, top, bottom, left, right, cv2.BORDER_CONSTANT, value=(114, 114, 114))
-    label = cv2.copyMakeBorder(label, top, bottom, left, right, cv2.BORDER_CONSTANT, value=255)
-    return image, label, (top, bottom, left, right)
+class PatchDataset(Dataset):
+    def __init__(self, images, labels):
+        self.images = images
+        self. labels = labels
+        assert len(self.images) == len(self.labels)
+    
+    def __len__(self):
+        return len(self.images)
+    
+    def __getitem__(self, idx):
+        return self.images[idx], self.labels[idx]
 
 
 if __name__ == '__main__':
-    model = WordSegmenter(3, 1, True)
+    model = WordSegmenter(3, 1, True).cuda()
+    
+    images = glob('dataset/images/*.png')
+    split = int(len(images) * 0.95)
+    tr_images, tr_labels = [], []
+    for image in tqdm(images[:split]):
+        label = image.replace("images", "labels")
+        tr_images.append(np.transpose(cv2.imread(image), (2, 0, 1)) / 255)
+        tr_labels.append(cv2.imread(label), flags=cv2.IMREAD_GRAYSCALE / 255)
 
-    raw_image = cv2.imread('data/test.png')
-    raw_label = cv2.imread('data/label.png', flags=cv2.IMREAD_GRAYSCALE)
-    assert raw_image.shape[:2] == raw_label.shape
+    eval_images, eval_labels = [], []
+    for image in tqdm(images[split:]):
+        label = image.replace("images", "labels")
+        eval_images.append(np.transpose(cv2.imread(image), (2, 0, 1)) / 255)
+        eval_labels.append(cv2.imread(label), flags=cv2.IMREAD_GRAYSCALE / 255)
 
-    term = 128
-    pad_image, pad_label, _ = rescale_pad_image(raw_image, raw_label, term)
-
-    height, width = pad_image.shape[:2]
-    hq, wq = height // term, width // term
-
-    tile_images, tile_labels = [], []
-    for y in range(0, height, term):
-        for x in range(0, width, term):
-            tile_images.append(np.transpose(pad_image[y:y+term, x:x+term, :], (2, 0, 1)))
-            tile_labels.append(pad_label[y:y+term, x:x+term])
+    # Dataset & Dataloader
+    train_dataset = PatchDataset(tr_images, tr_labels)
+    eval_dataset = PatchDataset(eval_images, eval_labels)
+    train_dataloader = DataLoader(train_dataset, batch_size=128, shuffle=True, num_workers=6, persistent_workers=True)
+    eval_dataloader = DataLoader(eval_dataset, batch_size=512, shuffle=False, num_workers=6, persistent_workers=True)
 
     # Criterion & Optimizer & Scheduler
     torch.manual_seed(42)
     np.random.seed(42)
     random.seed(42)
     criterion = torch.nn.BCEWithLogitsLoss()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=3e-5)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
 
+    max_loss = 1000.
     model.train()
-    tile_images = torch.from_numpy(np.array(tile_images)).float() / 255
-    tile_labels = torch.from_numpy(np.array(tile_labels)) / 255
     for i in tqdm(range(500)):
-        optimizer.zero_grad()
-        tile_logits = model(tile_images).squeeze(1)
-        loss = criterion(tile_logits, tile_labels)
-        loss.backward()
-        optimizer.steip()
+        for (images, labels) in train_dataloader:
+            optimizer.zero_grad()
 
-    logits = model(tile_images).squeeze(1)
-    pred = np.array(torch.sigmoid(logits).detach())
-    pred = np.clip(pred * 255, 0, 255).astype(np.uint8)
+            logits = model(images).squeeze(1)
+            loss = criterion(logits, labels)
+            loss.backward()
+            optimizer.step()
 
-    count = 0
-    canvas = np.ones((height, width)) * 255
-    for y in range(0, height, term):
-        for x in range(0, width, term):
-            canvas[y:y+term, x:x+term] = pred[count]
-            count += 1
+        with torch.no_grad():
+            eval_loss = []
+            for (images, labels) in eval_dataloader:
 
-    cv2.imwrite('result.png', canvas)
+                logits = model(images).squeeze(1)
+                loss = criterion(logits, labels)
+                eval_loss.append(loss.item())
+
+
+        if np.mean(eval_loss) < max_loss:
+            max_loss = np.mean(eval_loss)
+            torch.save(model.load_state_dict(), 'best.pt')
