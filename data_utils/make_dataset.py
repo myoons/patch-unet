@@ -4,14 +4,15 @@ from tqdm import tqdm
 from glob import glob
 
 
-def rescale_pad_image(image, label, term=128):
+def rescale_pad_image(image, label=None, term=128):
     shape = image.shape[:2]
     hpad, wpad = (128 - shape[0] % term) / 2, (128 - shape[1] % term) / 2
     top, bottom = int(round(hpad - 0.1)), int(round(hpad + 0.1))
     left, right = int(round(wpad - 0.1)), int(round(wpad + 0.1))
 
     image = cv2.copyMakeBorder(image, top, bottom, left, right, cv2.BORDER_CONSTANT, value=(177, 177, 177))
-    label = cv2.copyMakeBorder(label, top, bottom, left, right, cv2.BORDER_CONSTANT, value=255)
+    if label:
+        label = cv2.copyMakeBorder(label, top, bottom, left, right, cv2.BORDER_CONSTANT, value=255)
     return image, label, (top, bottom, left, right)
 
 
