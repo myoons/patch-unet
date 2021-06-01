@@ -4,6 +4,7 @@ import random
 import numpy as np
 from tqdm import tqdm
 from glob import glob
+from torch.nn import DataParallel
 from torch.utils.data import DataLoader, Dataset
 
 from models.WordSegmenter import WordSegmenter
